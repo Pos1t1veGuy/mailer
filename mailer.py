@@ -4,6 +4,7 @@ import imaplib
 import email
 import os
 import time
+import socket
 
 from email.policy import default
 from email.utils import parsedate_to_datetime
@@ -18,7 +19,7 @@ class Message:
 		self.To = self.msg['To']
 		self.subject = self.msg['Subject']
 		self.date_sent = parsedate_to_datetime(self.msg['Date'])
-		self.date_received = parsedate_to_datetime(self.msg['Received'].split('; ')[-1])
+		self.date_received = parsedate_to_datetime(self.msg['Received'].split('; ')[-1].split(';')[-1])
 		self.body = self._get_body(self.msg)
 		self.attachments = self._get_attachments(self.msg)
 
@@ -140,11 +141,16 @@ class MailBox:
 		return len(self.messages)
 	def __str__(self):
 		return f'{self.__class__.__name__}_{self.name}({len(self.messages)} messages)'
+	def __repr__(self):
+		return f'{self.__class__.__name__}({self.mailer}, "{self.name}")'
 
 
 class Mailer(imaplib.IMAP4_SSL):
 	def __init__(self, username: str, password: str, host: str, port: int = 993, default_box: str = 'INBOX'):
-		super().__init__(host, port)
+		try:
+			super().__init__(host, port)
+		except socket.gaierror:
+			raise ValueError(f'Can not connect to host with port: {host}:{port}')
 
 		self.username = str(username)
 		self.password = str(password)
@@ -163,74 +169,91 @@ class Mailer(imaplib.IMAP4_SSL):
 	def mailboxes(self) -> List[str]:
 		return self.get_mailboxes()
 	def get_mailboxes(self) -> List[str]:
-		rv, mailboxes = self.list()
-		if rv == 'OK':
-			return [mailbox.decode().replace('"', '').split(' | ')[-1].split(' / ')[-1] for mailbox in mailboxes]
-		else:
-			return []
+		try:
+			rv, mailboxes = self.list()
+			if rv == 'OK':
+				return [mailbox.decode().replace('"', '').split(' | ')[-1].split(' / ')[-1] for mailbox in mailboxes]
+			else:
+				return []
+		except imaplib.IMAP4.abort:
+			return self.copy().get_mailboxes()
 
 	@property
 	def messages(self) -> Union[List[int], str]:
-		rv, data = self.search(None, 'ALL')
-		if rv == 'OK':
-			return [int(msg_id) for msg_id in data[0].split()]
-		return rv
+		try:
+			rv, data = self.search(None, 'ALL')
+			if rv == 'OK':
+				return [int(msg_id) for msg_id in data[0].split()]
+			return rv
+		except imaplib.IMAP4.abort:
+			return self.copy().get_messages(mailbox_name)
 
 	def get_messages(self, mailbox_name: str) -> List[int]:
-		if mailbox_name in self.mailboxes:
-			self.select(mailbox_name)
-			msgs = self.messages
-			self.select(self.default_box)
-			return msgs
-		else:
-			raise ValueError(
+		try:
+			if mailbox_name in self.mailboxes:
+				self.select(mailbox_name)
+				msgs = self.messages
+				self.select(self.default_box)
+				return msgs
+			else:
+				raise ValueError(
 f'{self.__class__.__name__}.messages method takes a string mailbox name, that exists in list from {self.__class__.__name__}.get_mailboxes() method'
-			)
+				)
+		except imaplib.IMAP4.abort:
+			return self.copy().get_messages(mailbox_name)
 
 	def get_message(self, msg_id: int, mailbox_name: str) -> Union['Message', str]:
-		if mailbox_name in self.mailboxes:
-			self.select(mailbox_name)
+		try:
+			if mailbox_name in self.mailboxes:
+				self.select(mailbox_name)
 
-			if msg_id <= 0:
-				msg_id += len(self.messages)
+				if msg_id <= 0:
+					msg_id += len(self.messages)
 
-			rv, data = self.fetch(str(msg_id), '(RFC822)')
-			if rv == 'OK':
-				return Message(data[0][1], mailbox=mailbox_name)
+				rv, data = self.fetch(str(msg_id), '(RFC822)')
+				if rv == 'OK':
+					return Message(data[0][1], mailbox=mailbox_name)
 
-			self.select(self.default_box)
-			return rv
+				self.select(self.default_box)
+				return rv
 
-		else:
-			raise ValueError(
-f'{method_name} requires a string mailbox name as a key or an integer message index in {self.default_box}, that exists in list from {self.__class__.__name__}.get_mailboxes() method'
-			)
+			else:
+				raise ValueError(
+	f'{method_name} requires a string mailbox name as a key or an integer message index in {self.default_box}, that exists in list from {self.__class__.__name__}.get_mailboxes() method'
+				)
+
+		except imaplib.IMAP4.abort:
+			return self.copy().get_message(msg_id, mailbox_name)
 
 	def slice_messages(self, start: int, end: int, mailbox_name: str, step: int = 1) -> Union[List['Message'], str]:
-		if mailbox_name in self.mailboxes:
-			self.select(mailbox_name)
+		try:
+			if mailbox_name in self.mailboxes:
+				self.select(mailbox_name)
 
-			if start <= 0:
-				start += len(self.messages)
-			if end <= 0:
-				end += len(self.messages)
+				if start <= 0:
+					start += len(self.messages)
+				if end <= 0:
+					end += len(self.messages)
 
-			start = max(1, start)
-			end = min(len(self.messages), end)
+				start = max(1, start)
+				end = min(len(self.messages), end)
 
-			rv, list_data = self.fetch(f'{start}:{end}', '(RFC822)')
-			if rv == 'OK':
-				return [
-					Message(data[1], mailbox=mailbox_name) for i, data in enumerate(list_data) if isinstance(data, tuple) and isinstance(data[1], bytes) and i % step == 0
-				]
+				rv, list_data = self.fetch(f'{start}:{end}', '(RFC822)')
+				if rv == 'OK':
+					return [
+						Message(data[1], mailbox=mailbox_name) for i, data in enumerate(list_data) if isinstance(data, tuple) and isinstance(data[1], bytes) and i % step == 0
+					]
 
-			self.select(self.default_box)
-			return rv
+				self.select(self.default_box)
+				return rv
 
-		else:
-			raise ValueError(
-f'{method_name} requires a string mailbox name as a key or an integer message index in {self.default_box}, that exists in list from {self.__class__.__name__}.get_mailboxes() method'
-			)
+			else:
+				raise ValueError(
+	f'{method_name} requires a string mailbox name as a key or an integer message index in {self.default_box}, that exists in list from {self.__class__.__name__}.get_mailboxes() method'
+				)
+
+		except imaplib.IMAP4.abort:
+			return self.copy().slice_messages(start, end, mailbox_name, step=step)
 
 	def __getitem__(self, mailbox: Union[str, int]) -> Union['MailBox', 'Message']:
 		err_text = '{}.__geitem__ requires a string mailbox name as a key or an integer message index in {}, that exists in list from {}.get_mailboxes() method'.format(
@@ -259,6 +282,9 @@ f'{method_name} requires a string mailbox name as a key or an integer message in
 		return [ msg.serialize() for msg in self.messages ]
 	def json(self, indent: int = None) -> str:
 		return json.dumps(self.serialize()) if not indent else json.dumps(self.serialize(), indent=indent)
+
+	def copy(self) -> 'MailBox':
+		return self.__class__(self.username, self.password, self.host, port=self.port, default_box=self.default_box)
 
 	def __str__(self):
 		return f'{self.__class__.__name__}(client "{self.username}", {self.host}:{self.port})'

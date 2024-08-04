@@ -11,11 +11,11 @@ imap_hosts = {
 	'mail': 'imap.mail.ru',
 }
 
-def yandexMailer(username: str, password: str, default_box: str = 'inbox'):
+def yandexMailer(username: str, password: str, default_box: str = 'INBOX'):
 	return Mailer(username, password, 'imap.yandex.com', 993, default_box=default_box)
 
-def mailruMailer(username: str, password: str, default_box: str = 'inbox'):
+def mailruMailer(username: str, password: str, default_box: str = 'INBOX'):
 	return Mailer(username, password, 'imap.mail.ru', 993, default_box=default_box)
 
-def gmailMailer(username: str, password: str, default_box: str = 'inbox'):
+def gmailMailer(username: str, password: str, default_box: str = 'INBOX'):
 	return Mailer(username, password, 'imap.gmail.com', 993, default_box=default_box)
